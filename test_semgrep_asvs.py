@@ -110,5 +110,87 @@ class CustomRulesTest(unittest.TestCase):
         self.assertEqual(len(data["results"]), 6, "expected one test file per custom rule")
 
 
+import tempfile  # noqa: E402
+
+FIXTURES = REPO / "fixtures"
+
+
+def scan(*args, out=None):
+    """Run the CLI in-process from the repo root so paths print as fixtures/...; returns (exit_code, stdout, out_dir)."""
+    import contextlib
+    import io
+    os.chdir(REPO)
+    out = out or Path(tempfile.mkdtemp())
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = sa.main(["scan", "--out", str(out), *args, "fixtures"])
+    return code, buf.getvalue(), out
+
+
+class ScanTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.code, cls.text, cls.out = scan("--format", "text,json")
+
+    def test_exit_zero_without_strict(self):
+        self.assertEqual(self.code, 0)
+
+    def test_text_groups_by_chapter_and_shows_levels(self):
+        self.assertIn("== V6 Stored Cryptography", self.text)
+        self.assertRegex(self.text, r"V6\.2\.8 \[L3\] WARNING\s+custom\.go\.constant-time-compare\s+fixtures/go/main\.go:\d+")
+        self.assertRegex(self.text, r"V6\.2\.8 \[L3\] WARNING\s+custom\.python\.constant-time-compare")
+        self.assertRegex(self.text, r"V6\.2\.8 \[L3\] WARNING\s+custom\.php\.constant-time-compare")
+        self.assertRegex(self.text, r"V6\.2\.8 \[L3\] WARNING\s+custom\.javascript\.constant-time-compare")
+        self.assertRegex(self.text, r"V2\.1\.1 \[L1 L2 L3\] WARNING\s+custom\.python\.django-password-min-length")
+        self.assertRegex(self.text, r"V2\.1\.1 \[L1 L2 L3\] WARNING\s+custom\.php\.laravel-password-min-length")
+
+    def test_cwe_join_and_override_mapping(self):
+        self.assertRegex(self.text, r"V6\.2\.2 \[L2 L3\] \w+\s+vendor\.python\.lang\.security\.insecure-hash-algorithm-md5")
+        self.assertRegex(self.text, r"V5\.2\.4 \[L1 L2 L3\] \w+\s+vendor\.javascript\.browser\.security\.eval-detected")
+        self.assertRegex(self.text, r"V14\.3\.2 \[L1 L2 L3\] \w+\s+vendor\.php\.laravel\.security\.laravel-active-debug-code")
+        self.assertRegex(self.text, r"V6\.2\.2 \[L2 L3\] \w+\s+vendor\.go\.lang\.security\.audit\.crypto\.use-of-DES")
+
+    def test_summary_lines(self):
+        self.assertRegex(self.text, r"-- \d+ findings: ERROR \d+, WARNING \d+, INFO \d+")
+        self.assertRegex(self.text, r"-- requirements with findings: L1 \d+, L2 \d+, L3 \d+")
+
+    def test_json_written_with_short_ids(self):
+        data = json.loads((self.out / "semgrep.json").read_text())
+        ids = {r["check_id"] for r in data["results"]}
+        self.assertIn("custom.go.constant-time-compare", ids)
+        self.assertFalse(any("semgrep_asvs.rules" in i for i in ids), ids)
+        self.assertFalse((self.out / "semgrep.sarif").exists(), "sarif not requested")
+        self.assertFalse((self.out / "coverage.md").exists(), "md not requested")
+
+    def test_strict_exits_one_on_error_severity(self):
+        code, text, _ = scan("--format", "text", "--strict")
+        self.assertEqual(code, 1)
+
+    def test_text_only_creates_no_out_dir(self):
+        out = Path(tempfile.mkdtemp()) / "never"
+        code, _, _ = scan("--format", "text", out=out)
+        self.assertEqual(code, 0)
+        self.assertFalse(out.exists())
+
+    def test_overrides_match_a_loaded_rule(self):
+        _, sarif = sa.run_semgrep([str(FIXTURES / "go")], Path(tempfile.mkdtemp()))
+        loaded = {sa.short_id(r["id"]) for r in sarif["runs"][0]["tool"]["driver"]["rules"]}
+        for key in sa.load_overrides():
+            self.assertIn(key, loaded, f"override key matches no loaded rule: {key}")
+
+    def test_tool_error_when_semgrep_missing(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
+            with self.assertRaises(sa.ToolError) as ctx:
+                sa.find_semgrep(Path("/nonexistent"))
+        self.assertIn("semgrep not found", str(ctx.exception))
+        self.assertIn("semgrep==", str(ctx.exception))
+
+    def test_find_semgrep_prefers_sibling_of_interpreter(self):
+        exe, env = sa.find_semgrep()
+        self.assertEqual(Path(exe).parent, VENV_BIN)
+        self.assertTrue(env["PATH"].startswith(str(VENV_BIN)))
+
+
 if __name__ == "__main__":
     unittest.main()
