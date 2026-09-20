@@ -85,9 +85,12 @@ class MappingTest(unittest.TestCase):
         reqs = sa.load_asvs()
         by_id = {r["id"]: r for r in reqs}
         by_cwe = sa.index_by_cwe(reqs)
-        rel = sa.related_requirements({"521"}, {"V14.3.2"}, by_cwe, by_id)
-        self.assertIn("V2.1.1", rel)
-        self.assertIn("V14.3.2", rel)
+        # explicit ids replace the CWE join entirely
+        self.assertEqual(sa.related_requirements({"521"}, {"V14.3.2"}, by_cwe, by_id), {"V14.3.2"})
+        # no explicit ids: CWE join (521 fans out to the V2.1.x password requirements)
+        self.assertIn("V2.1.1", sa.related_requirements({"521"}, set(), by_cwe, by_id))
+        # unknown explicit ids are dropped, falling back to the join
+        self.assertIn("V2.1.1", sa.related_requirements({"521"}, {"V99.9.9"}, by_cwe, by_id))
         self.assertEqual(sa.related_requirements({"999999"}, set(), by_cwe, by_id), set())
 
 
