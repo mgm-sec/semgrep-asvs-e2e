@@ -1,0 +1,9 @@
+# Vendor rules the CWE join misses: <short rule id>: [ASVS ids]
+# Short id = path under semgrep_asvs/rules joined with dots + rule id (no file name).
+# Every key must match exactly one loaded rule; test_semgrep_asvs enforces this.
+vendor.python.flask.security.audit.debug-enabled: [V14.3.2]
+vendor.php.laravel.security.laravel-active-debug-code: [V14.3.2]
+vendor.go.lang.security.audit.net.pprof-debug-exposure: [V14.3.2]
+vendor.javascript.lang.best-practice.javascript-debugger: [V14.3.2]
+vendor.go.lang.security.audit.crypto.math-random-used: [V3.2.2, V3.2.4]
+vendor.php.lang.security.file-inclusion: [V5.3.9]
