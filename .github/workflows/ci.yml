@@ -1,0 +1,50 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m venv .venv && .venv/bin/pip install -q -e . pre-commit build
+      - run: make test
+      - name: wheel contains rules but not vendor test sources
+        run: |
+          .venv/bin/python -m build -q --wheel
+          .venv/bin/python - <<'PY'
+          import glob, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          assert any(n.endswith("rules/vendor/php/lang/security/weak-crypto.yaml") for n in names), "vendor yaml missing"
+          assert any(n.endswith("rules/custom/go/constant-time-compare.yaml") for n in names), "custom yaml missing"
+          assert not any(n.endswith((".go", ".php", ".js")) for n in names), "test sources leaked into wheel"
+          assert any(n.endswith("asvs/asvs-4.0.3.flat.json") for n in names)
+          PY
+  dogfood:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
+        with:
+          paths: fixtures
+          upload-sarif: "false"
+      - run: grep -q "V6.2.8" semgrep-asvs-out/coverage.md
+  dogfood-strict-fails:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - id: strict
+        uses: ./
+        continue-on-error: true
+        with:
+          paths: fixtures
+          strict: "true"
+          upload-sarif: "false"
+      - run: test "${{ steps.strict.outcome }}" = "failure"

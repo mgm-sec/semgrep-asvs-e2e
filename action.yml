@@ -1,0 +1,48 @@
+name: semgrep-asvs
+description: Semgrep with vendored rules, reported against OWASP ASVS 4.0.3 (report-only unless strict)
+inputs:
+  paths:
+    description: Files or directories to scan
+    default: "."
+  strict:
+    description: Fail the job on any ERROR-severity finding
+    default: "false"
+  upload-sarif:
+    description: Upload SARIF to GitHub code scanning (needs security-events write)
+    default: "true"
+  python-version:
+    description: Python version to run the tool with
+    default: "3.12"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+    - shell: bash
+      run: python -m pip install -q "$GITHUB_ACTION_PATH"
+    - id: scan
+      shell: bash
+      continue-on-error: true
+      run: |
+        strict=""
+        if [ "${{ inputs.strict }}" = "true" ]; then strict="--strict"; fi
+        semgrep-asvs scan --out semgrep-asvs-out $strict ${{ inputs.paths }}
+    - shell: bash
+      if: always()
+      run: cat semgrep-asvs-out/coverage.md >> "$GITHUB_STEP_SUMMARY"
+    - if: always() && inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: semgrep-asvs-out/semgrep.sarif
+        category: semgrep-asvs
+    - if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: semgrep-asvs
+        path: semgrep-asvs-out
+    - shell: bash
+      if: always() && steps.scan.outcome == 'failure'
+      run: |
+        echo "semgrep-asvs: strict mode found ERROR-severity findings (or the tool failed); see the job summary" >&2
+        exit 1

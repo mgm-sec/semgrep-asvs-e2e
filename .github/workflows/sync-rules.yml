@@ -1,0 +1,25 @@
+name: sync-rules
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: re-vendor opengrep-rules at upstream main
+        run: |
+          sha=$(git ls-remote https://github.com/opengrep/opengrep-rules.git refs/heads/main | cut -f1)
+          sed -i "s/^OPENGREP_RULES_COMMIT=.*/OPENGREP_RULES_COMMIT=$sha/" scripts/sync-rules.sh
+          scripts/sync-rules.sh
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          commit-message: "chore: sync opengrep-rules"
+          title: "chore: sync opengrep-rules"
+          body: "Automated re-vendor from opengrep-rules main. CI runs the rule tests; update known-failures.txt if needed."
+          branch: chore/sync-rules
+          delete-branch: true

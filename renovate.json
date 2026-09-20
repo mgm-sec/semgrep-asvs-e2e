@@ -1,0 +1,8 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "pep621": { "enabled": true },
+  "packageRules": [
+    { "matchPackageNames": ["semgrep"], "rangeStrategy": "pin", "groupName": "semgrep" }
+  ]
+}
