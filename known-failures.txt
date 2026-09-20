@@ -1,0 +1,2 @@
+avoid-query-set-extra
+unsafe-argon2-config
