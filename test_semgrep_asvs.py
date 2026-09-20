@@ -259,5 +259,17 @@ class CoverageTest(unittest.TestCase):
         self.assertIn("V10.3.1", out)
 
 
+class PreCommitTest(unittest.TestCase):
+    def test_try_repo_runs_hook(self):
+        import shutil
+        pc = shutil.which("pre-commit", path=ENV["PATH"])
+        if not pc:
+            self.skipTest("pre-commit not installed")
+        p = run([pc, "try-repo", ".", "semgrep-asvs", "--verbose", "--files",
+                 FIXTURES / "python" / "verify.py", FIXTURES / "go" / "main.go"])
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("V6.2.8", p.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
