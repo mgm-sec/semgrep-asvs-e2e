@@ -117,7 +117,11 @@ def cwes_from(values) -> set[str]:
 
 
 def related_requirements(cwes: set[str], asvs_ids: set[str], by_cwe: dict, by_id: dict) -> set[str]:
+    """Explicit ids (custom rule metadata or overrides) win; the CWE join is the fallback, because a
+    CWE such as 521 fans out to nine V2.1.x requirements while the rule author meant one."""
     ids = {i for i in asvs_ids if i in by_id}
+    if ids:
+        return ids
     for c in cwes:
         ids.update(r["id"] for r in by_cwe.get(c, []))
     return ids
@@ -232,20 +236,25 @@ def levels_str(report: dict, rid: str) -> str:
 
 # ---------- renderers ----------
 
+def finding_levels(report: dict, f: dict) -> str:
+    return " ".join(lvl for lvl in LEVELS if any(lvl in report["by_id"][rid]["levels"] for rid in f["asvs"]))
+
+
 def render_text(report: dict) -> str:
+    """One line per finding, grouped under the chapter of its first (lowest) related requirement."""
     lines: list[str] = []
     by_chapter: dict[str, list] = defaultdict(list)
     unmapped = []
     for f in report["findings"]:
-        if not f["asvs"]:
+        if f["asvs"]:
+            by_chapter[f["asvs"][0].split(".")[0]].append(f)
+        else:
             unmapped.append(f)
-        for rid in f["asvs"]:
-            by_chapter[rid.split(".")[0]].append((rid, f))
     for ch in sorted(by_chapter, key=lambda c: int(c[1:])):
         name = next(r["chapter_name"] for r in report["asvs"] if r["chapter"] == ch)
         lines.append(f"== {ch} {name}")
-        for rid, f in sorted(by_chapter[ch], key=lambda x: (asvs_key(x[0]), x[1]["path"], x[1]["line"])):
-            lines.append(f"{rid} [{levels_str(report, rid)}] {f['severity']:<7} {f['rule']}  {f['path']}:{f['line']}  {f['message']}")
+        for f in sorted(by_chapter[ch], key=lambda f: (asvs_key(f["asvs"][0]), f["path"], f["line"])):
+            lines.append(f"{','.join(f['asvs'])} [{finding_levels(report, f)}] {f['severity']:<7} {f['rule']}  {f['path']}:{f['line']}  {f['message']}")
     if unmapped:
         lines.append("== No ASVS mapping")
         for f in unmapped:
@@ -260,12 +269,97 @@ def render_text(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def tag_sarif(sarif: dict, report: dict) -> dict:  # replaced in Task 6
+def tag_sarif(sarif: dict, report: dict) -> dict:
+    for rule in sarif["runs"][0]["tool"]["driver"]["rules"]:
+        sid = short_id(rule["id"])
+        entry = report["inventory"].get(sid)
+        if not entry:
+            continue
+        rids = sorted((rid for rid, rules in report["req_rules"].items() if sid in rules), key=asvs_key)
+        tags = rule.setdefault("properties", {}).setdefault("tags", [])
+        new = [f"asvs/{rid}" for rid in rids]
+        new += [f"asvs-level/{lvl}" for lvl in LEVELS if any(lvl in report["by_id"][rid]["levels"] for rid in rids)]
+        new += [f"cwe/{c}" for c in sorted(entry["cwes"], key=int)]
+        tags.extend(t for t in new if t not in tags)
     return sarif
 
 
-def render_markdown(report: dict) -> str:  # replaced in Task 6
-    return "# ASVS 4.0.3 coverage report\n"
+def _md_cell(s: str) -> str:
+    return s.replace("|", "\\|").replace("\n", " ")
+
+
+def render_requirement_map(report: dict) -> str:
+    lines = ["## Requirement map", "",
+             "All 286 requirements. \"Related rules\" counts rules whose CWE or explicit mapping matches; it is not a verification.", ""]
+    chapters: dict[str, list[dict]] = defaultdict(list)
+    for r in report["asvs"]:
+        chapters[r["chapter"]].append(r)
+    for ch in sorted(chapters, key=lambda c: int(c[1:])):
+        reqs = chapters[ch]
+        with_rules = sum(1 for r in reqs if report["req_rules"].get(r["id"]))
+        lines.append(f"<details><summary>{ch} {reqs[0]['chapter_name']} — {with_rules}/{len(reqs)} requirements with related rules</summary>")
+        lines.append("")
+        lines.append("| ASVS | L1 | L2 | L3 | CWE | Related rules | Findings |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for r in sorted(reqs, key=lambda r: asvs_key(r["id"])):
+            lv = [("x" if lvl in r["levels"] else "") for lvl in LEVELS]
+            lines.append(f"| {r['id']} | {lv[0]} | {lv[1]} | {lv[2]} | {', '.join(sorted(r['cwes'], key=int))} "
+                         f"| {len(report['req_rules'].get(r['id'], ()))} | {len(report['req_findings'].get(r['id'], ()))} |")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_gaps(report: dict) -> str:
+    no_rule = [r["id"] for r in report["asvs"] if r["cwes"] and not report["req_rules"].get(r["id"])]
+    no_cwe = [r["id"] for r in report["asvs"] if not r["cwes"]]
+    unmapped = sum(1 for f in report["findings"] if not f["asvs"])
+    return "\n".join([
+        "## Gaps", "",
+        f"- Requirements with a CWE but no related rule ({len(no_rule)}): " + ", ".join(no_rule),
+        f"- Requirements without a CWE ({len(no_cwe)}), not mappable by this tool: " + ", ".join(no_cwe),
+        f"- Findings with no ASVS relation: {unmapped}", "",
+    ])
+
+
+def render_markdown(report: dict) -> str:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = ["# ASVS 4.0.3 coverage report", "",
+             f"Generated {now}, semgrep {report['semgrep_version']}, rules: {report['n_vendor']} vendor + {report['n_custom']} custom, "
+             f"targets: {' '.join(report['targets'])}", "",
+             "Findings are related to ASVS requirements through CWE identifiers and explicit mappings. "
+             "A requirement with related rules and zero findings has not been verified; it has merely not been contradicted by static analysis.", "",
+             "## Summary by level", "", "| Level | Requirements | With related rules | With findings |", "|---|---|---|---|"]
+    for lvl in LEVELS:
+        reqs = [r for r in report["asvs"] if lvl in r["levels"]]
+        lines.append(f"| {lvl} | {len(reqs)} | {sum(1 for r in reqs if report['req_rules'].get(r['id']))} "
+                     f"| {sum(1 for r in reqs if report['req_findings'].get(r['id']))} |")
+    lines += ["", "## Findings by requirement", ""]
+    if report["req_findings"]:
+        lines += ["| ASVS | Levels | Severity | Rule | Location | Message |", "|---|---|---|---|---|---|"]
+        for rid in sorted(report["req_findings"], key=asvs_key):
+            for f in report["req_findings"][rid]:
+                lines.append(f"| {rid} | {levels_str(report, rid)} | {f['severity']} | `{f['rule']}` | `{f['path']}:{f['line']}` | {_md_cell(f['message'])} |")
+    else:
+        lines.append("No findings related to an ASVS requirement.")
+    unmapped = [f for f in report["findings"] if not f["asvs"]]
+    if unmapped:
+        lines += ["", f"{len(unmapped)} finding(s) have no ASVS relation; see semgrep.json."]
+    lines += ["", render_requirement_map(report), render_gaps(report)]
+    return "\n".join(lines)
+
+
+def render_coverage_text(report: dict) -> str:
+    lines = [f"semgrep {report['semgrep_version']}, rules: {report['n_vendor']} vendor + {report['n_custom']} custom"]
+    for lvl in LEVELS:
+        reqs = [r for r in report["asvs"] if lvl in r["levels"]]
+        lines.append(f"{lvl}: {sum(1 for r in reqs if report['req_rules'].get(r['id']))}/{len(reqs)} requirements with related rules")
+    no_rule = [r["id"] for r in report["asvs"] if r["cwes"] and not report["req_rules"].get(r["id"])]
+    lines.append(f"no related rule ({len(no_rule)}): " + " ".join(no_rule))
+    no_cwe = [r["id"] for r in report["asvs"] if not r["cwes"]]
+    lines.append(f"no CWE ({len(no_cwe)}): " + " ".join(no_cwe))
+    return "\n".join(lines) + "\n"
 
 
 # ---------- CLI ----------
@@ -297,6 +391,20 @@ def cmd_scan(args) -> int:
     return 0
 
 
+def cmd_coverage(args) -> int:
+    with tempfile.TemporaryDirectory(prefix="semgrep-asvs-") as tmp:
+        empty = Path(tmp) / "empty"
+        empty.mkdir()
+        sem_json, sarif = run_semgrep([str(empty)], Path(tmp))
+    shorten_ids(sem_json, sarif)
+    report = build_report(sem_json, sarif, [])
+    if args.format == "md":
+        sys.stdout.write("\n".join([render_requirement_map(report), render_gaps(report)]))
+    else:
+        sys.stdout.write(render_coverage_text(report))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="semgrep-asvs", description=__doc__)
     parser.add_argument("--version", action="version", version=f"semgrep-asvs {version()}")
@@ -306,9 +414,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--out", default=DEFAULT_OUT, help=f"output directory for json/sarif/md (default: {DEFAULT_OUT})")
     s.add_argument("--format", default="text,md,sarif,json", help="comma list of text,md,sarif,json")
     s.add_argument("--strict", action="store_true", help="exit 1 if any ERROR-severity finding")
+    c = sub.add_parser("coverage", help="print which ASVS requirements have related rules (no scan of user code)")
+    c.add_argument("--format", choices=["text", "md"], default="text")
     args = parser.parse_args(argv)
     try:
-        return cmd_scan(args)
+        return cmd_scan(args) if args.cmd == "scan" else cmd_coverage(args)
     except ToolError as e:
         print(f"semgrep-asvs: {e}", file=sys.stderr)
         return 2

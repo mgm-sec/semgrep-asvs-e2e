@@ -145,10 +145,11 @@ class ScanTest(unittest.TestCase):
         self.assertRegex(self.text, r"V2\.1\.1 \[L1 L2 L3\] WARNING\s+custom\.php\.laravel-password-min-length")
 
     def test_cwe_join_and_override_mapping(self):
-        self.assertRegex(self.text, r"V6\.2\.2 \[L2 L3\] \w+\s+vendor\.python\.lang\.security\.insecure-hash-algorithm-md5")
-        self.assertRegex(self.text, r"V5\.2\.4 \[L1 L2 L3\] \w+\s+vendor\.javascript\.browser\.security\.eval-detected")
+        self.assertRegex(self.text, r"V6\.2\.2\b[^\[\n]*\[L2 L3\] \w+\s+vendor\.python\.lang\.security\.insecure-hash-algorithm-md5")
+        self.assertRegex(self.text, r"V5\.2\.4\b[^\[\n]*\[L1 L2 L3\] \w+\s+vendor\.javascript\.browser\.security\.eval-detected")
         self.assertRegex(self.text, r"V14\.3\.2 \[L1 L2 L3\] \w+\s+vendor\.php\.laravel\.security\.laravel-active-debug-code")
-        self.assertRegex(self.text, r"V6\.2\.2 \[L2 L3\] \w+\s+vendor\.go\.lang\.security\.audit\.crypto\.use-of-DES")
+        self.assertRegex(self.text, r"V6\.2\.2\b[^\[\n]*\[L2 L3\] \w+\s+vendor\.go\.lang\.security\.audit\.crypto\.use-of-DES")
+        self.assertEqual(self.text.count("custom.python.django-password-min-length"), 1, "explicit asvs mapping must replace the CWE fan-out")
 
     def test_summary_lines(self):
         self.assertRegex(self.text, r"-- \d+ findings: ERROR \d+, WARNING \d+, INFO \d+")
@@ -190,6 +191,72 @@ class ScanTest(unittest.TestCase):
         exe, env = sa.find_semgrep()
         self.assertEqual(Path(exe).parent, VENV_BIN)
         self.assertTrue(env["PATH"].startswith(str(VENV_BIN)))
+
+
+class OutputsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.code, cls.text, cls.out = scan("--format", "md,sarif")
+        cls.md = (cls.out / "coverage.md").read_text()
+        cls.sarif = json.loads((cls.out / "semgrep.sarif").read_text())
+
+    def test_markdown_sections(self):
+        for h in ("# ASVS 4.0.3 coverage report", "## Summary by level", "## Findings by requirement",
+                  "## Requirement map", "## Gaps"):
+            self.assertIn(h, self.md)
+        self.assertNotIn("verified", self.md.lower().replace("not been verified", ""))
+        self.assertNotIn("compliant", self.md.lower())
+
+    def test_markdown_summary_table(self):
+        self.assertRegex(self.md, r"\| L1 \| 128 \| \d+ \| \d+ \|")
+        self.assertRegex(self.md, r"\| L2 \| 259 \| \d+ \| \d+ \|")
+        self.assertRegex(self.md, r"\| L3 \| 278 \| \d+ \| \d+ \|")
+
+    def test_markdown_findings_rows(self):
+        self.assertRegex(self.md, r"\| V6\.2\.8 \| L3 \| WARNING \| `custom\.go\.constant-time-compare` \| `fixtures/go/main\.go:\d+` \|")
+        self.assertRegex(self.md, r"\| V14\.3\.2 \| L1 L2 L3 \| \w+ \| `vendor\.php\.laravel\.security\.laravel-active-debug-code` \|")
+
+    def test_markdown_requirement_map_and_gaps(self):
+        self.assertIn("<details><summary>V10 Malicious Code", self.md)
+        self.assertRegex(self.md, r"\| V6\.2\.8 \|  \|  \| x \| 385 \| 4 \| \d+ \|")
+        gaps = self.md.split("## Gaps")[1]
+        self.assertIn("V10.3.1", gaps)
+        self.assertRegex(gaps, r"without a CWE \(18\)[^\n]*V1\.1\.1")
+
+    def test_sarif_rule_tags(self):
+        rules = {r["id"]: r for r in self.sarif["runs"][0]["tool"]["driver"]["rules"]}
+        tags = rules["custom.go.constant-time-compare"]["properties"]["tags"]
+        self.assertIn("asvs/V6.2.8", tags)
+        self.assertIn("asvs-level/L3", tags)
+        self.assertIn("cwe/385", tags)
+        tags = rules["vendor.php.laravel.security.laravel-active-debug-code"]["properties"]["tags"]
+        self.assertIn("asvs/V14.3.2", tags)
+        self.assertIn("asvs-level/L1", tags)
+        self.assertTrue(all("semgrep_asvs.rules" not in r["ruleId"] for r in self.sarif["runs"][0]["results"]))
+
+
+class CoverageTest(unittest.TestCase):
+    def _run(self, *args):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = sa.main(["coverage", *args])
+        return code, buf.getvalue()
+
+    def test_coverage_md_has_map_and_gaps_without_findings(self):
+        code, out = self._run("--format", "md")
+        self.assertEqual(code, 0)
+        self.assertIn("## Requirement map", out)
+        self.assertIn("## Gaps", out)
+        self.assertNotIn("## Findings by requirement", out)
+        self.assertRegex(out, r"\| V6\.2\.8 \|  \|  \| x \| 385 \| 4 \| 0 \|")
+
+    def test_coverage_text_lists_gap_ids(self):
+        code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"L1: \d+/128 requirements with related rules")
+        self.assertIn("V10.3.1", out)
 
 
 if __name__ == "__main__":
