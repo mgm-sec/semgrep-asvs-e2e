@@ -75,9 +75,10 @@ from the YAML files.
 
 ### `scan [PATHS...] [--out DIR] [--format LIST] [--strict]`
 
-1. Run once:
-   `semgrep scan --metrics=off --disable-version-check --quiet --config <pkg>/rules/vendor --config <pkg>/rules/custom --json-output=OUT/semgrep.json --sarif-output=OUT/semgrep.sarif [PATHS]`
-   (`PATHS` default `.`; pre-commit passes staged files.)
+1. Run once, into a temp dir (so `--format text` leaves nothing behind in the consumer's repo):
+   `semgrep scan --metrics=off --disable-version-check --quiet --config <pkg>/rules/vendor --config <pkg>/rules/custom --json-output=TMP/semgrep.json --sarif-output=TMP/semgrep.sarif [PATHS]`
+   (`PATHS` default `.`; pre-commit passes staged files.) Never `--no-rewrite-rule-ids`: it
+   silently drops findings when rule ids collide across languages (37 do in the vendor set).
 2. Load ASVS JSON; build `cwe -> [requirement]`. Parse every digit-run in a requirement's
    `cwe` field as a CWE number.
 3. For every finding, ASVS IDs = union of
@@ -87,9 +88,11 @@ from the YAML files.
    Levels come from the requirement (`level1/2/3` non-empty).
 4. Write outputs selected by `--format` (default `text,md,sarif,json`; `--out` default
    `semgrep-asvs-out`):
-   - `json`: Semgrep's JSON, untouched.
-   - `sarif`: Semgrep's SARIF with `runs[0].tool.driver.rules[*].properties.tags` extended
-     with `asvs/V6.2.8`, `asvs-level/L1`, `cwe/385` for each rule that has findings.
+   - `json`: Semgrep's JSON, with `check_id` shortened to `vendor.<path>.<id>` /
+     `custom.<lang>.<id>` (Semgrep prefixes ids with the dotted config path).
+   - `sarif`: Semgrep's SARIF with the same id shortening and
+     `runs[0].tool.driver.rules[*].properties.tags` extended with `asvs/V6.2.8`,
+     `asvs-level/L1`, `cwe/385` for every loaded rule.
    - `md`: `coverage.md` (structure below).
    - `text`: printed to stdout, never a file. Findings grouped by ASVS chapter:
      `V6.2.8 [L2 L3] ERROR  custom.go.constant-time-compare  app/auth.go:42  message`,
