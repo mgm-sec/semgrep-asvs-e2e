@@ -122,10 +122,10 @@ Generated <ISO date>, semgrep <version>, rules: <n> vendor + <m> custom, targets
 
 ### `coverage [--format md|text]`
 
-No scan. Loads the rule set via `semgrep --validate --json`? No: `--validate` does not
-emit metadata. Instead runs `semgrep scan --config ... --json-output` against an empty
-temp directory to obtain the loaded rule list with metadata, then prints the Requirement
-map and Gaps sections. This is the input for deciding which custom rules to write next.
+No scan of user code. Runs `semgrep scan --config ... --json-output` against an empty
+temp directory, which returns the loaded rule list with metadata (`--validate` does not
+emit metadata), then prints the Requirement map and Gaps sections. This is the input for
+deciding which custom rules to write next.
 
 ## Mapping files
 
@@ -133,12 +133,13 @@ map and Gaps sections. This is the input for deciding which custom rules to writ
 disambiguate same-named rules across languages):
 
 ```yaml
-# rule-id suffix: [ASVS ids]   — vendor rules the CWE join misses
+# rule-id suffix: [ASVS ids]   — vendor rules the CWE join misses.
+# Every key must match exactly one loaded rule; the self-test enforces this.
 python.django.security.audit.debug-enabled: [V14.3.2]
 php.laravel.security.laravel-active-debug-code: [V14.3.2]
 go.net.pprof-debug-exposure: [V14.3.2]
 javascript.lang.security.audit.javascript-debugger: [V14.3.2]
-python.lang.security.audit.insecure-random: [V3.2.2, V3.2.4]   # exact ids fixed during implementation
+python.lang.security.audit.insecure-random: [V3.2.2, V3.2.4]
 php.lang.security.include-injection: [V5.3.9]
 ```
 
