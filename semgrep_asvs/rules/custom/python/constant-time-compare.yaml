@@ -1,0 +1,37 @@
+rules:
+- id: constant-time-compare
+  languages: [python]
+  severity: WARNING
+  message: >-
+    HMAC digest compared with ==/!=, which is not constant-time and leaks timing information.
+    Use hmac.compare_digest(expected, received).
+  metadata:
+    asvs: [V6.2.8]
+    cwe: ["CWE-385: Covert Timing Channel"]
+    category: security
+    technology: [python]
+    references:
+    - https://docs.python.org/3/library/hmac.html#hmac.compare_digest
+  pattern-either:
+  - patterns:
+    - pattern-either:
+      - pattern: $A == $B
+      - pattern: $A != $B
+    - metavariable-pattern:
+        metavariable: $A
+        pattern-either:
+        - pattern: hmac.new(...).hexdigest()
+        - pattern: hmac.new(...).digest()
+        - pattern: hmac.HMAC(...).hexdigest()
+        - pattern: hmac.HMAC(...).digest()
+  - patterns:
+    - pattern-either:
+      - pattern: $A == $B
+      - pattern: $A != $B
+    - metavariable-pattern:
+        metavariable: $B
+        pattern-either:
+        - pattern: hmac.new(...).hexdigest()
+        - pattern: hmac.new(...).digest()
+        - pattern: hmac.HMAC(...).hexdigest()
+        - pattern: hmac.HMAC(...).digest()

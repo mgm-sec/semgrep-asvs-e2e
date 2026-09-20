@@ -1,0 +1,25 @@
+rules:
+- id: constant-time-compare
+  languages: [go]
+  severity: WARNING
+  message: >-
+    HMAC compared with bytes.Equal or ==, which is not constant-time and leaks timing information.
+    Use hmac.Equal(expected, received).
+  metadata:
+    asvs: [V6.2.8]
+    cwe: ["CWE-385: Covert Timing Channel"]
+    category: security
+    technology: [go]
+    references:
+    - https://pkg.go.dev/crypto/hmac#Equal
+  patterns:
+  - pattern-either:
+    - pattern: bytes.Equal($M.Sum(...), $B)
+    - pattern: bytes.Equal($B, $M.Sum(...))
+    - pattern: hex.EncodeToString($M.Sum(...)) == $B
+    - pattern: $B == hex.EncodeToString($M.Sum(...))
+    - pattern: string($M.Sum(...)) == $B
+    - pattern: $B == string($M.Sum(...))
+  - pattern-inside: |
+      $M := hmac.New(...)
+      ...

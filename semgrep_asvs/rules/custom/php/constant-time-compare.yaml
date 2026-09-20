@@ -1,0 +1,35 @@
+rules:
+- id: constant-time-compare
+  languages: [php]
+  severity: WARNING
+  message: >-
+    HMAC compared with ==/===, which is not constant-time and leaks timing information.
+    Use hash_equals($expected, $received).
+  metadata:
+    asvs: [V6.2.8]
+    cwe: ["CWE-385: Covert Timing Channel"]
+    category: security
+    technology: [php]
+    references:
+    - https://www.php.net/manual/en/function.hash-equals.php
+  pattern-either:
+  - patterns:
+    - pattern-either:
+      - pattern: $A == $B
+      - pattern: $A === $B
+      - pattern: $A != $B
+      - pattern: $A !== $B
+    - metavariable-pattern:
+        metavariable: $A
+        pattern-either:
+        - pattern: hash_hmac(...)
+  - patterns:
+    - pattern-either:
+      - pattern: $A == $B
+      - pattern: $A === $B
+      - pattern: $A != $B
+      - pattern: $A !== $B
+    - metavariable-pattern:
+        metavariable: $B
+        pattern-either:
+        - pattern: hash_hmac(...)

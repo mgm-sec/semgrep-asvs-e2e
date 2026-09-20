@@ -91,5 +91,24 @@ class MappingTest(unittest.TestCase):
         self.assertEqual(sa.related_requirements({"999999"}, set(), by_cwe, by_id), set())
 
 
+class CustomRulesTest(unittest.TestCase):
+    def test_every_custom_rule_declares_valid_asvs_ids(self):
+        by_rule = sa.custom_asvs_by_rule()
+        self.assertEqual(len(by_rule), 6, sorted(by_rule))
+        valid = {r["id"] for r in sa.load_asvs()}
+        for rule, ids in by_rule.items():
+            self.assertTrue(ids, f"{rule} has no asvs ids")
+            self.assertTrue(ids <= valid, f"{rule}: unknown ASVS ids {ids - valid}")
+
+    def test_custom_rule_unit_tests_pass(self):
+        custom = RULES_DIR / "custom"
+        p = run([SEMGREP, "--test", "--json", "--metrics=off", "--config", custom, custom])
+        data = json.loads(p.stdout)
+        self.assertEqual(data["config_with_errors"], [])
+        failing = {rule for res in data["results"].values() for rule, chk in res["checks"].items() if not chk["passed"]}
+        self.assertEqual(failing, set())
+        self.assertEqual(len(data["results"]), 6, "expected one test file per custom rule")
+
+
 if __name__ == "__main__":
     unittest.main()
