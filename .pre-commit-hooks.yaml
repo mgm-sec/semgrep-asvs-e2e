@@ -1,0 +1,7 @@
+- id: semgrep-asvs
+  name: semgrep-asvs
+  description: Semgrep with vendored rules, reported against OWASP ASVS 4.0.3 (report-only unless args include --strict)
+  entry: semgrep-asvs scan --format text
+  language: python
+  types_or: [python, php, javascript, jsx, ts, tsx, go]
+  require_serial: true
