@@ -81,11 +81,13 @@ from the YAML files.
    silently drops findings when rule ids collide across languages (37 do in the vendor set).
 2. Load ASVS JSON; build `cwe -> [requirement]`. Parse every digit-run in a requirement's
    `cwe` field as a CWE number.
-3. For every finding, ASVS IDs = union of
-   - `extra.metadata.asvs` (custom rules),
-   - `overrides.yaml[key]` where `check_id` ends with `.` + key (or equals key),
-   - requirements whose CWE appears in `extra.metadata.cwe` (parse `CWE-(\d+)`).
-   Levels come from the requirement (`level1/2/3` non-empty).
+3. For every rule, ASVS IDs = the explicit mapping if one exists, else the CWE join:
+   - explicit: `metadata.asvs` (custom rules) or `overrides.yaml[short id]`,
+   - CWE join: requirements whose CWE appears in the rule's `cwe` metadata (parse `CWE-(\d+)`).
+   Explicit wins outright because a CWE such as 521 fans out to nine V2.1.x requirements
+   while the rule author meant one. Levels come from the requirement (`level1/2/3`).
+   Short id = path under `semgrep_asvs/rules` joined with dots + rule id, e.g.
+   `vendor.python.flask.security.audit.debug-enabled`.
 4. Write outputs selected by `--format` (default `text,md,sarif,json`; `--out` default
    `semgrep-asvs-out`):
    - `json`: Semgrep's JSON, with `check_id` shortened to `vendor.<path>.<id>` /
@@ -94,8 +96,9 @@ from the YAML files.
      `runs[0].tool.driver.rules[*].properties.tags` extended with `asvs/V6.2.8`,
      `asvs-level/L1`, `cwe/385` for every loaded rule.
    - `md`: `coverage.md` (structure below).
-   - `text`: printed to stdout, never a file. Findings grouped by ASVS chapter:
-     `V6.2.8 [L2 L3] ERROR  custom.go.constant-time-compare  app/auth.go:42  message`,
+   - `text`: printed to stdout, never a file. One line per finding listing all its related
+     requirement ids, grouped under the chapter of the first id:
+     `V2.9.3,V6.2.2,V8.3.7 [L2 L3] WARNING vendor.go.lang.security.audit.crypto.use-of-DES  main.go:11  message`,
      then unmapped findings (rule has no ASVS relation) under "No ASVS mapping", then a
      summary: findings per severity, requirements touched per level.
 5. Exit code: 0. With `--strict`: 1 if any finding has severity ERROR. 2 on tool errors
@@ -227,6 +230,14 @@ README); `actions/upload-artifact` with the out dir; final step fails the job if
   via `peter-evans/create-pull-request` if the tree changed.
 - `scripts/sync-rules.sh`: shallow-clone the pinned commit, replace the five language
   dirs and `LICENSE` under `rules/vendor/`, write `VENDOR-COMMIT`. Never edits files.
+
+## Engine resolution
+
+The tool runs the Semgrep installed next to its own interpreter (`Path(sys.executable).parent`)
+and puts that directory first on the child's PATH. Semgrep's `semgrep` wrapper execs
+`pysemgrep`/`semgrep-core` found on PATH, so a stale global install (observed: Homebrew 1.157.0)
+would otherwise silently replace the pinned 1.177.0. The self-test asserts the running
+version equals the pin.
 
 ## Error handling
 
