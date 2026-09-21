@@ -15,7 +15,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m venv .venv && .venv/bin/pip install -q -e . pre-commit build
-      - run: scripts/install-gitleaks.sh "$HOME/.local/bin" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: make test
       - name: wheel contains rules but not vendor test sources
         run: |
@@ -61,4 +60,4 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - run: scripts/install-gitleaks.sh "$HOME/.local/bin" && "$HOME/.local/bin/gitleaks" git --no-banner --redact -c .gitleaks.toml .
+      - run: bash semgrep_asvs/install-gitleaks.sh "$HOME/.local/bin" && "$HOME/.local/bin/gitleaks" git --no-banner --redact -c .gitleaks.toml .

@@ -58,8 +58,8 @@ Every `scan` also runs [gitleaks](https://github.com/gitleaks/gitleaks) and maps
 
 - `--secrets dir` (default) scans the given paths; `--secrets git` scans the full history of the repo you run in
   (the Action default, so give `actions/checkout` `fetch-depth: 0`); `--secrets none` skips the gate.
-- The CLI needs `gitleaks` on PATH: `brew install gitleaks` or `scripts/install-gitleaks.sh` (pinned release, SHA-256 checked).
-  The Action installs it itself. pre-commit gets a second hook, `semgrep-asvs-secrets`, built via Go (pre-commit downloads Go).
+- gitleaks is taken from PATH if present; otherwise the pinned release is downloaded once into `~/.cache/semgrep-asvs/`
+  (SHA-256 verified) by the CLI, the Action and the second pre-commit hook `semgrep-asvs-secrets` alike.
 - Allowlist with a `.gitleaks.toml` in your repo root; the tool passes it to gitleaks explicitly.
 - Bump the pin with `scripts/bump-gitleaks.sh <version>` (rewrites version and checksums everywhere).
 
@@ -68,7 +68,7 @@ Standard Semgrep mechanisms: `# nosemgrep: <rule-id>` comments and a `.semgrepig
 
 ## Versions
 - Semgrep: pinned once in `pyproject.toml` (Renovate bumps it; CI proves the rules still validate and pass their tests).
-- gitleaks: pinned in `scripts/install-gitleaks.sh` (with checksums), `.pre-commit-hooks.yaml` and the module; Renovate bumps the version, `scripts/bump-gitleaks.sh` refreshes the checksums.
+- gitleaks: pinned in `semgrep_asvs/install-gitleaks.sh` (with checksums) and the module; Renovate bumps the version, `scripts/bump-gitleaks.sh` refreshes the checksums.
 - Vendor rules: `semgrep_asvs/rules/vendor/VENDOR-COMMIT`; a weekly workflow re-syncs from upstream `main` and opens a PR.
 - ASVS: 4.0.3 (`semgrep_asvs/asvs/asvs-4.0.3.flat.json`).
 

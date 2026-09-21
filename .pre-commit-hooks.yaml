@@ -7,8 +7,7 @@
   require_serial: true
 - id: semgrep-asvs-secrets
   name: semgrep-asvs secrets gate (gitleaks)
-  description: Block commits whose staged changes contain secrets (gitleaks, always blocking; ASVS V2.10.4 / V6.4.1)
-  entry: gitleaks git --pre-commit --redact --staged --verbose --no-banner
-  language: golang
-  additional_dependencies: [github.com/gitleaks/gitleaks/v8@v8.30.1]
+  description: Block commits whose staged changes contain secrets (gitleaks, always blocking; ASVS V2.10.4 / V6.4.1). Installs the pinned gitleaks into ~/.cache/semgrep-asvs if absent.
+  entry: semgrep-asvs secrets-hook
+  language: python
   pass_filenames: false

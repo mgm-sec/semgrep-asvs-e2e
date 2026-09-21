@@ -24,11 +24,6 @@ runs:
         python-version: ${{ inputs.python-version }}
     - shell: bash
       run: python -m pip install -q "$GITHUB_ACTION_PATH"
-    - if: inputs.secrets != 'none'
-      shell: bash
-      run: |
-        "$GITHUB_ACTION_PATH/scripts/install-gitleaks.sh" "$RUNNER_TEMP/gitleaks-bin"
-        echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
     - id: scan
       shell: bash
       continue-on-error: true

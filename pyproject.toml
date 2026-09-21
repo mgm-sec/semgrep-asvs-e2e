@@ -18,6 +18,7 @@ semgrep-asvs = "semgrep_asvs:main"
 include = [
   "semgrep_asvs/*.py",
   "semgrep_asvs/asvs/*",
+  "semgrep_asvs/install-gitleaks.sh",
   "semgrep_asvs/rules/**/*.yaml",
   "semgrep_asvs/rules/**/*.yml",
   "semgrep_asvs/rules/vendor/LICENSE",

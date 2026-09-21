@@ -22,7 +22,8 @@ LEVELS = ("L1", "L2", "L3")
 SEVERITIES = ("ERROR", "WARNING", "INFO")
 FORMATS = ("text", "md", "sarif", "json")
 DEFAULT_OUT = "semgrep-asvs-out"
-GITLEAKS_VERSION = "8.30.1"  # rewritten by scripts/bump-gitleaks.sh
+GITLEAKS_VERSION = "8.30.1"  # rewritten by scripts/bump-gitleaks.sh (together with install-gitleaks.sh)
+GITLEAKS_INSTALLER = PKG / "install-gitleaks.sh"
 SECRETS_MODES = ("dir", "git", "none")
 SECRETS_RULE = "secrets.gitleaks"
 SECRETS_ASVS = ("V2.10.4", "V6.4.1")  # both CWE-798 in ASVS 4.0.3
@@ -185,14 +186,26 @@ def shorten_ids(sem_json: dict, sarif: dict) -> None:
 
 # ---------- gitleaks (secrets gate) ----------
 
-def find_gitleaks() -> str:
-    exe = shutil.which("gitleaks")
-    if not exe:
+def gitleaks_cache_dir() -> Path:
+    base = os.environ.get("SEMGREP_ASVS_CACHE") or os.path.join(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", "semgrep-asvs")
+    return Path(base) / f"gitleaks-{GITLEAKS_VERSION}"
+
+
+def find_gitleaks(path: str | None = None, cache: Path | None = None) -> str:
+    """gitleaks from PATH, else from our cache, else auto-install the pinned release there (SHA-256 verified)."""
+    exe = shutil.which("gitleaks", path=path)
+    if exe:
+        return exe
+    cache = cache or gitleaks_cache_dir()
+    cached = cache / "gitleaks"
+    if cached.is_file():
+        return str(cached)
+    proc = subprocess.run(["bash", str(GITLEAKS_INSTALLER), str(cache)], text=True, capture_output=True)
+    if proc.returncode != 0 or not cached.is_file():
         raise ToolError(
-            "gitleaks not found on PATH (needed for the secrets gate; pass --secrets none to skip it). "
-            f"Install v{GITLEAKS_VERSION}: brew install gitleaks, scripts/install-gitleaks.sh, or "
-            f"https://github.com/gitleaks/gitleaks/releases/tag/v{GITLEAKS_VERSION}")
-    return exe
+            f"gitleaks not found on PATH and auto-install of v{GITLEAKS_VERSION} into {cache} failed "
+            f"(pass --secrets none to skip the gate):\n{proc.stderr.strip()}")
+    return str(cached)
 
 
 def _empty_gitleaks_run() -> dict:
@@ -472,6 +485,15 @@ def cmd_scan(args) -> int:
     return 0
 
 
+def cmd_secrets_hook(args) -> int:
+    """pre-commit entry: gitleaks over the staged changes; its exit code is the verdict (1 = secrets found)."""
+    cmd = [find_gitleaks(), "git", "--pre-commit", "--staged", "--redact", "--verbose", "--no-banner"]
+    cfg = Path.cwd() / ".gitleaks.toml"
+    if cfg.exists():
+        cmd += ["-c", str(cfg)]
+    return subprocess.call(cmd)
+
+
 def cmd_coverage(args) -> int:
     with tempfile.TemporaryDirectory(prefix="semgrep-asvs-") as tmp:
         empty = Path(tmp) / "empty"
@@ -500,9 +522,10 @@ def main(argv: list[str] | None = None) -> int:
                         "none = skip (default: dir). Any secret found exits 1 regardless of --strict")
     c = sub.add_parser("coverage", help="print which ASVS requirements have related rules (no scan of user code)")
     c.add_argument("--format", choices=["text", "md"], default="text")
+    sub.add_parser("secrets-hook", help="pre-commit entry: gitleaks on staged changes, exit 1 on any secret")
     args = parser.parse_args(argv)
     try:
-        return cmd_scan(args) if args.cmd == "scan" else cmd_coverage(args)
+        return {"scan": cmd_scan, "coverage": cmd_coverage, "secrets-hook": cmd_secrets_hook}[args.cmd](args)
     except ToolError as e:
         print(f"semgrep-asvs: {e}", file=sys.stderr)
         return 2

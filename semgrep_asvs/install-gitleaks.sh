@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Download the pinned gitleaks release binary (MIT) for linux/darwin x64/arm64, verify SHA-256, install to $1.
-# Pins below are rewritten by scripts/bump-gitleaks.sh.
+# Pins below are rewritten by scripts/bump-gitleaks.sh. Shipped in the wheel; semgrep-asvs runs it to auto-install.
 set -euo pipefail
 GITLEAKS_VERSION=8.30.1
 SHA256_linux_x64=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb

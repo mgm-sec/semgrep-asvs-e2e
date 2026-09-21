@@ -343,16 +343,38 @@ class SecretsTest(unittest.TestCase):
 
     def test_gitleaks_missing_is_tool_error(self):
         from unittest import mock
-        with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
+        with mock.patch.object(sa, "GITLEAKS_INSTALLER", Path("/nonexistent/install.sh")):
             with self.assertRaises(sa.ToolError) as ctx:
-                sa.find_gitleaks()
+                sa.find_gitleaks(path="/nonexistent", cache=Path(tempfile.mkdtemp()) / "c")
         self.assertIn("gitleaks not found", str(ctx.exception))
         self.assertIn(sa.GITLEAKS_VERSION, str(ctx.exception))
 
     def test_gitleaks_version_pinned_consistently(self):
         v = sa.GITLEAKS_VERSION
-        self.assertIn(f"GITLEAKS_VERSION={v}\n", (REPO / "scripts" / "install-gitleaks.sh").read_text())
-        self.assertIn(f"gitleaks/v8@v{v}]", (REPO / ".pre-commit-hooks.yaml").read_text())
+        self.assertIn(f"GITLEAKS_VERSION={v}\n", sa.GITLEAKS_INSTALLER.read_text())
+
+    def test_auto_install_into_cache_when_not_on_path(self):
+        cache = Path(tempfile.mkdtemp()) / f"gitleaks-{sa.GITLEAKS_VERSION}"
+        exe = sa.find_gitleaks(path="/nonexistent", cache=cache)
+        self.assertEqual(Path(exe), cache / "gitleaks")
+        p = subprocess.run([exe, "version"], text=True, capture_output=True)
+        self.assertEqual(p.stdout.strip(), sa.GITLEAKS_VERSION)
+        self.assertEqual(sa.find_gitleaks(path="/nonexistent", cache=cache), exe, "second call must reuse the cache")
+
+    def test_secrets_hook_blocks_staged_secret(self):
+        import shutil
+        repo = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        (repo / "key.pem").write_text((FIXTURES / "secrets" / "key.pem").read_text())
+        subprocess.run(["git", "-C", str(repo), "add", "key.pem"], check=True)
+        p = subprocess.run([sys.executable, "-m", "semgrep_asvs", "secrets-hook"], cwd=repo, text=True, capture_output=True, env=ENV)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        (repo / "key.pem").unlink()
+        subprocess.run(["git", "-C", str(repo), "rm", "-q", "--cached", "key.pem"], check=True)
+        (repo / "clean.txt").write_text("nothing to see\n")
+        subprocess.run(["git", "-C", str(repo), "add", "clean.txt"], check=True)
+        p = subprocess.run([sys.executable, "-m", "semgrep_asvs", "secrets-hook"], cwd=repo, text=True, capture_output=True, env=ENV)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
     def test_coverage_counts_gate_as_related_rule(self):
         import contextlib
