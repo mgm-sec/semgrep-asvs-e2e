@@ -22,6 +22,11 @@ LEVELS = ("L1", "L2", "L3")
 SEVERITIES = ("ERROR", "WARNING", "INFO")
 FORMATS = ("text", "md", "sarif", "json")
 DEFAULT_OUT = "semgrep-asvs-out"
+GITLEAKS_VERSION = "8.30.1"  # rewritten by scripts/bump-gitleaks.sh
+SECRETS_MODES = ("dir", "git", "none")
+SECRETS_RULE = "secrets.gitleaks"
+SECRETS_ASVS = ("V2.10.4", "V6.4.1")  # both CWE-798 in ASVS 4.0.3
+SECRETS_CWE = "798"
 _RULE_ID_MARKER = re.compile(r"(?:^|\.)semgrep_asvs\.rules\.")
 _CWE = re.compile(r"CWE-(\d+)")
 
@@ -178,6 +183,60 @@ def shorten_ids(sem_json: dict, sarif: dict) -> None:
         res["ruleId"] = short_id(res["ruleId"])
 
 
+# ---------- gitleaks (secrets gate) ----------
+
+def find_gitleaks() -> str:
+    exe = shutil.which("gitleaks")
+    if not exe:
+        raise ToolError(
+            "gitleaks not found on PATH (needed for the secrets gate; pass --secrets none to skip it). "
+            f"Install v{GITLEAKS_VERSION}: brew install gitleaks, scripts/install-gitleaks.sh, or "
+            f"https://github.com/gitleaks/gitleaks/releases/tag/v{GITLEAKS_VERSION}")
+    return exe
+
+
+def _empty_gitleaks_run() -> dict:
+    return {"tool": {"driver": {"name": "gitleaks", "rules": []}}, "results": []}
+
+
+def run_gitleaks(mode: str, targets: list[str], out_dir: Path) -> dict:
+    """Run gitleaks (`dir` per target, or `git` on the repo at cwd); returns one merged SARIF run.
+    A `.gitleaks.toml` in the working directory is passed explicitly: gitleaks does not auto-load it in dir mode."""
+    exe = find_gitleaks()
+    base = [exe, mode, "--no-banner", "--redact", "--exit-code", "0", "-f", "sarif"]
+    cfg = Path.cwd() / ".gitleaks.toml"
+    if cfg.exists():
+        base += ["-c", str(cfg)]
+    merged = _empty_gitleaks_run()
+    for i, target in enumerate(targets if mode == "dir" else ["."]):
+        report = out_dir / f"gitleaks-{i}.sarif"
+        proc = subprocess.run([*base, "-r", str(report), target], text=True, capture_output=True)
+        if proc.returncode != 0:
+            raise ToolError(f"gitleaks exited {proc.returncode}\n{proc.stderr.strip()}")
+        if not report.exists():
+            continue
+        run = json.loads(report.read_text(encoding="utf-8"))["runs"][0]
+        merged["tool"] = run["tool"]
+        merged["results"].extend(run.get("results", []))
+    return merged
+
+
+def secrets_findings(gl_run: dict) -> list[dict]:
+    out = []
+    for res in gl_run.get("results", []):
+        loc = res["locations"][0]["physicalLocation"]
+        message = res.get("message", {}).get("text", "").strip()
+        out.append({
+            "rule": f"secrets.{res['ruleId']}",
+            "path": loc["artifactLocation"]["uri"],
+            "line": loc.get("region", {}).get("startLine", 0),
+            "severity": "ERROR",
+            "message": message.splitlines()[0] if message else "secret detected",
+            "asvs": list(SECRETS_ASVS),
+        })
+    return out
+
+
 # ---------- report model ----------
 
 def build_inventory(sarif: dict, overrides: dict, custom_asvs: dict) -> dict[str, dict]:
@@ -187,10 +246,11 @@ def build_inventory(sarif: dict, overrides: dict, custom_asvs: dict) -> dict[str
         sid = short_id(rule["id"])
         tags = rule.get("properties", {}).get("tags", [])
         inv[sid] = {"cwes": cwes_from(tags), "asvs": set(overrides.get(sid, [])) | custom_asvs.get(sid, set())}
+    inv[SECRETS_RULE] = {"cwes": {SECRETS_CWE}, "asvs": set(SECRETS_ASVS)}  # the gitleaks gate is part of the package
     return inv
 
 
-def build_report(sem_json: dict, sarif: dict, targets: list[str]) -> dict:
+def build_report(sem_json: dict, sarif: dict, targets: list[str], gl_run: dict | None = None) -> dict:
     asvs = load_asvs()
     by_id = {r["id"]: r for r in asvs}
     by_cwe = index_by_cwe(asvs)
@@ -214,6 +274,8 @@ def build_report(sem_json: dict, sarif: dict, targets: list[str]) -> dict:
             "message": message.splitlines()[0] if message else "",
             "asvs": sorted(related_requirements(entry["cwes"], entry["asvs"], by_cwe, by_id), key=asvs_key),
         })
+    if gl_run is not None:
+        findings.extend(secrets_findings(gl_run))
     findings.sort(key=lambda f: (f["path"], f["line"], f["rule"]))
 
     req_findings: dict[str, list[dict]] = defaultdict(list)
@@ -227,6 +289,8 @@ def build_report(sem_json: dict, sarif: dict, targets: list[str]) -> dict:
         "semgrep_version": sem_json.get("version", "?"), "errors": sem_json.get("errors", []),
         "n_vendor": sum(1 for s in inventory if s.startswith("vendor.")),
         "n_custom": sum(1 for s in inventory if s.startswith("custom.")),
+        "secrets": gl_run,
+        "n_secrets": sum(1 for f in findings if f["rule"].startswith("secrets.")),
     }
 
 
@@ -266,6 +330,10 @@ def render_text(report: dict) -> str:
         f"{lvl} {sum(1 for rid in touched if lvl in report['by_id'][rid]['levels'])}" for lvl in LEVELS))
     if report["errors"]:
         lines.append(f"-- semgrep reported {len(report['errors'])} error(s); see semgrep.json")
+    if report.get("secrets") is None:
+        lines.append("-- secrets gate: skipped")
+    else:
+        lines.append(f"-- secrets gate: {report['n_secrets']} secret(s) found" + (" (BLOCKING)" if report["n_secrets"] else ""))
     return "\n".join(lines) + "\n"
 
 
@@ -281,6 +349,15 @@ def tag_sarif(sarif: dict, report: dict) -> dict:
         new += [f"asvs-level/{lvl}" for lvl in LEVELS if any(lvl in report["by_id"][rid]["levels"] for rid in rids)]
         new += [f"cwe/{c}" for c in sorted(entry["cwes"], key=int)]
         tags.extend(t for t in new if t not in tags)
+    if report.get("secrets") is not None:
+        gl = json.loads(json.dumps(report["secrets"]))  # copy; the gitleaks run becomes runs[1]
+        gl_tags = [f"asvs/{rid}" for rid in SECRETS_ASVS]
+        gl_tags += [f"asvs-level/{lvl}" for lvl in LEVELS if any(lvl in report["by_id"][rid]["levels"] for rid in SECRETS_ASVS)]
+        gl_tags.append(f"cwe/{SECRETS_CWE}")
+        for rule in gl["tool"]["driver"].get("rules", []):
+            tags = rule.setdefault("properties", {}).setdefault("tags", [])
+            tags.extend(t for t in gl_tags if t not in tags)
+        sarif["runs"].append(gl)
     return sarif
 
 
@@ -327,7 +404,8 @@ def render_markdown(report: dict) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = ["# ASVS 4.0.3 coverage report", "",
              f"Generated {now}, semgrep {report['semgrep_version']}, rules: {report['n_vendor']} vendor + {report['n_custom']} custom, "
-             f"targets: {' '.join(report['targets'])}", "",
+             f"targets: {' '.join(report['targets'])}. Secrets gate (gitleaks): "
+             + ("skipped" if report.get("secrets") is None else f"{report['n_secrets']} secret(s) found") + ".", "",
              "Findings are related to ASVS requirements through CWE identifiers and explicit mappings. "
              "A requirement with related rules and zero findings has not been verified; it has merely not been contradicted by static analysis.", "",
              "## Summary by level", "", "| Level | Requirements | With related rules | With findings |", "|---|---|---|---|"]
@@ -372,8 +450,9 @@ def cmd_scan(args) -> int:
     targets = args.paths or ["."]
     with tempfile.TemporaryDirectory(prefix="semgrep-asvs-") as tmp:
         sem_json, sarif = run_semgrep(targets, Path(tmp))
+        gl_run = run_gitleaks(args.secrets, targets, Path(tmp)) if args.secrets != "none" else None
     shorten_ids(sem_json, sarif)
-    report = build_report(sem_json, sarif, targets)
+    report = build_report(sem_json, sarif, targets, gl_run)
 
     out = Path(args.out)
     if any(f in formats for f in ("json", "sarif", "md")):
@@ -386,6 +465,8 @@ def cmd_scan(args) -> int:
         (out / "coverage.md").write_text(render_markdown(report), encoding="utf-8")
     if "text" in formats:
         sys.stdout.write(render_text(report))
+    if report["n_secrets"]:
+        return 1  # secrets always block, independent of --strict
     if args.strict and any(f["severity"] == "ERROR" for f in report["findings"]):
         return 1
     return 0
@@ -414,6 +495,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--out", default=DEFAULT_OUT, help=f"output directory for json/sarif/md (default: {DEFAULT_OUT})")
     s.add_argument("--format", default="text,md,sarif,json", help="comma list of text,md,sarif,json")
     s.add_argument("--strict", action="store_true", help="exit 1 if any ERROR-severity finding")
+    s.add_argument("--secrets", choices=SECRETS_MODES, default="dir",
+                   help="secrets gate via gitleaks: dir = scan the given paths, git = full history of the repo at cwd, "
+                        "none = skip (default: dir). Any secret found exits 1 regardless of --strict")
     c = sub.add_parser("coverage", help="print which ASVS requirements have related rules (no scan of user code)")
     c.add_argument("--format", choices=["text", "md"], default="text")
     args = parser.parse_args(argv)

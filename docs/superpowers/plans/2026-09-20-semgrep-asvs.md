@@ -1856,12 +1856,12 @@ git commit -m "feat: composite GitHub Action, CI, weekly rule sync, Renovate"
 git status --short
 .venv/bin/python -m build -q --wheel && ls dist/
 ```
-Expected: no output from `git status`; `semgrep_asvs-0.1.0-py3-none-any.whl` listed.
+Expected: no output from `git status`; `semgrep_asvs-0.2.0-py3-none-any.whl` listed.
 
 - [ ] **Step 2: Smoke-test the wheel in a fresh venv, from another directory**
 
 ```bash
-python3 -m venv /tmp/sa-smoke && /tmp/sa-smoke/bin/pip install -q dist/semgrep_asvs-0.1.0-py3-none-any.whl
+python3 -m venv /tmp/sa-smoke && /tmp/sa-smoke/bin/pip install -q dist/semgrep_asvs-0.2.0-py3-none-any.whl
 cd fixtures && /tmp/sa-smoke/bin/semgrep-asvs scan --format text . | tail -3; cd ..
 ```
 Expected: the two `--` summary lines with non-zero finding counts.

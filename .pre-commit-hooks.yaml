@@ -1,7 +1,14 @@
 - id: semgrep-asvs
   name: semgrep-asvs
   description: Semgrep with vendored rules, reported against OWASP ASVS 4.0.3 (report-only unless args include --strict)
-  entry: semgrep-asvs scan --format text
+  entry: semgrep-asvs scan --format text --secrets none
   language: python
   types_or: [python, php, javascript, jsx, ts, tsx, go]
   require_serial: true
+- id: semgrep-asvs-secrets
+  name: semgrep-asvs secrets gate (gitleaks)
+  description: Block commits whose staged changes contain secrets (gitleaks, always blocking; ASVS V2.10.4 / V6.4.1)
+  entry: gitleaks git --pre-commit --redact --staged --verbose --no-banner
+  language: golang
+  additional_dependencies: [github.com/gitleaks/gitleaks/v8@v8.30.1]
+  pass_filenames: false

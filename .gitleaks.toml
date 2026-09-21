@@ -1,0 +1,8 @@
+# gitleaks config for THIS repo. Deliberately fake secrets live in:
+#  - fixtures/secrets/ (our self-test fixture)
+#  - semgrep_asvs/rules/vendor/ (upstream rule test sources with hardcoded dummy credentials)
+[extend]
+useDefault = true
+
+[allowlist]
+paths = ["fixtures/secrets/", "semgrep_asvs/rules/vendor/"]

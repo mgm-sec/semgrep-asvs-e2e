@@ -273,6 +273,97 @@ class PreCommitTest(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("V6.2.8", p.stdout)
 
+    def test_try_repo_installs_secrets_hook(self):
+        import shutil
+        pc = shutil.which("pre-commit", path=ENV["PATH"])
+        if not pc:
+            self.skipTest("pre-commit not installed")
+        p = run([pc, "try-repo", ".", "semgrep-asvs-secrets", "--verbose", "--all-files"])
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("semgrep-asvs secrets gate (gitleaks)", p.stdout)
+
+
+class SecretsTest(unittest.TestCase):
+    """Runs on a copy of fixtures/ in a temp dir, where this repo's .gitleaks.toml allowlist does not apply."""
+
+    @classmethod
+    def setUpClass(cls):
+        import contextlib
+        import io
+        import shutil
+        cls.tmp = Path(tempfile.mkdtemp())
+        shutil.copytree(FIXTURES, cls.tmp / "fixtures")
+        os.chdir(cls.tmp)
+        cls.out = cls.tmp / "out"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cls.code = sa.main(["scan", "--out", str(cls.out), "--format", "text,md,sarif", "--secrets", "dir", "fixtures"])
+        cls.text = buf.getvalue()
+        os.chdir(REPO)
+
+    def test_secret_blocks_without_strict(self):
+        self.assertEqual(self.code, 1)
+        self.assertRegex(self.text, r"V2\.10\.4,V6\.4\.1 \[L2 L3\] ERROR\s+secrets\.private-key\s+fixtures/secrets/key\.pem:1")
+        self.assertIn("-- secrets gate: 1 secret(s) found (BLOCKING)", self.text)
+
+    def test_markdown_rows_and_summary(self):
+        md = (self.out / "coverage.md").read_text()
+        self.assertIn("Secrets gate (gitleaks): 1 secret(s) found.", md)
+        self.assertRegex(md, r"\| V2\.10\.4 \| L2 L3 \| ERROR \| `secrets\.private-key` \| `fixtures/secrets/key\.pem:1` \|")
+        self.assertRegex(md, r"\| V6\.4\.1 \|  \| x \| x \| 798 \| \d+ \| 1 \|")
+
+    def test_sarif_has_tagged_gitleaks_run(self):
+        sarif = json.loads((self.out / "semgrep.sarif").read_text())
+        self.assertEqual(len(sarif["runs"]), 2)
+        gl = sarif["runs"][1]
+        self.assertEqual(gl["tool"]["driver"]["name"], "gitleaks")
+        self.assertEqual([r["ruleId"] for r in gl["results"]], ["private-key"])
+        rule = next(r for r in gl["tool"]["driver"]["rules"] if r["id"] == "private-key")
+        for t in ("asvs/V2.10.4", "asvs/V6.4.1", "asvs-level/L2", "cwe/798"):
+            self.assertIn(t, rule["properties"]["tags"])
+
+    def test_secrets_none_skips_gate(self):
+        import contextlib
+        import io
+        os.chdir(self.tmp)
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = sa.main(["scan", "--format", "text", "--secrets", "none", "fixtures"])
+        finally:
+            os.chdir(REPO)
+        self.assertEqual(code, 0)
+        self.assertNotIn("secrets.private-key", buf.getvalue())
+        self.assertIn("-- secrets gate: skipped", buf.getvalue())
+
+    def test_repo_allowlist_hides_own_fixture(self):
+        code, text, _ = scan("--format", "text")  # cwd = REPO, default --secrets dir, .gitleaks.toml applies
+        self.assertEqual(code, 0)
+        self.assertIn("-- secrets gate: 0 secret(s) found", text)
+
+    def test_gitleaks_missing_is_tool_error(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent"}):
+            with self.assertRaises(sa.ToolError) as ctx:
+                sa.find_gitleaks()
+        self.assertIn("gitleaks not found", str(ctx.exception))
+        self.assertIn(sa.GITLEAKS_VERSION, str(ctx.exception))
+
+    def test_gitleaks_version_pinned_consistently(self):
+        v = sa.GITLEAKS_VERSION
+        self.assertIn(f"GITLEAKS_VERSION={v}\n", (REPO / "scripts" / "install-gitleaks.sh").read_text())
+        self.assertIn(f"gitleaks/v8@v{v}]", (REPO / ".pre-commit-hooks.yaml").read_text())
+
+    def test_coverage_counts_gate_as_related_rule(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sa.main(["coverage", "--format", "md"])
+        out = buf.getvalue()
+        self.assertRegex(out, r"\| V2\.10\.4 \|  \| x \| x \| 798 \| [1-9]\d* \| 0 \|")
+        self.assertRegex(out, r"\| V6\.4\.1 \|  \| x \| x \| 798 \| [1-9]\d* \| 0 \|")
+
 
 if __name__ == "__main__":
     unittest.main()

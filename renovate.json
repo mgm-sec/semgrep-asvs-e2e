@@ -2,6 +2,20 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "pep621": { "enabled": true },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^scripts/install-gitleaks\\.sh$/", "/^semgrep_asvs/__init__\\.py$/", "/^\\.pre-commit-hooks\\.yaml$/"],
+      "matchStrings": [
+        "GITLEAKS_VERSION=(?<currentValue>[0-9.]+)",
+        "GITLEAKS_VERSION = \"(?<currentValue>[0-9.]+)\"",
+        "gitleaks/v8@v(?<currentValue>[0-9.]+)"
+      ],
+      "depNameTemplate": "gitleaks/gitleaks",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ],
   "packageRules": [
     { "matchPackageNames": ["semgrep"], "rangeStrategy": "pin", "groupName": "semgrep" }
   ]

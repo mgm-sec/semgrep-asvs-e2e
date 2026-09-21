@@ -15,6 +15,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m venv .venv && .venv/bin/pip install -q -e . pre-commit build
+      - run: scripts/install-gitleaks.sh "$HOME/.local/bin" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: make test
       - name: wheel contains rules but not vendor test sources
         run: |
@@ -27,24 +28,37 @@ jobs:
           assert not any(n.endswith((".go", ".php", ".js")) for n in names), "test sources leaked into wheel"
           assert any(n.endswith("asvs/asvs-4.0.3.flat.json") for n in names)
           PY
-  dogfood:
+  dogfood-report-only:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: ./
         with:
           paths: fixtures
+          secrets: none
           upload-sarif: "false"
       - run: grep -q "V6.2.8" semgrep-asvs-out/coverage.md
-  dogfood-strict-fails:
+  dogfood-gates-block:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - id: strict
+        with:
+          fetch-depth: 0
+      - id: gates
         uses: ./
         continue-on-error: true
         with:
           paths: fixtures
           strict: "true"
+          secrets: dir
           upload-sarif: "false"
-      - run: test "${{ steps.strict.outcome }}" = "failure"
+      - run: test "${{ steps.gates.outcome }}" = "failure"
+      - run: grep -q "V2.10.4" semgrep-asvs-out/coverage.md
+  self-scan:
+    # This repo's own history must be clean: .gitleaks.toml allowlists only fixtures/secrets/.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - run: scripts/install-gitleaks.sh "$HOME/.local/bin" && "$HOME/.local/bin/gitleaks" git --no-banner --redact -c .gitleaks.toml .

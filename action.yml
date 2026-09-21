@@ -13,6 +13,9 @@ inputs:
   python-version:
     description: Python version to run the tool with
     default: "3.12"
+  secrets:
+    description: "Secrets gate via gitleaks: git (full history; use fetch-depth 0), dir (checked-out files) or none. Any secret fails the job."
+    default: "git"
 runs:
   using: composite
   steps:
@@ -21,13 +24,18 @@ runs:
         python-version: ${{ inputs.python-version }}
     - shell: bash
       run: python -m pip install -q "$GITHUB_ACTION_PATH"
+    - if: inputs.secrets != 'none'
+      shell: bash
+      run: |
+        "$GITHUB_ACTION_PATH/scripts/install-gitleaks.sh" "$RUNNER_TEMP/gitleaks-bin"
+        echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
     - id: scan
       shell: bash
       continue-on-error: true
       run: |
         strict=""
         if [ "${{ inputs.strict }}" = "true" ]; then strict="--strict"; fi
-        semgrep-asvs scan --out semgrep-asvs-out $strict ${{ inputs.paths }}
+        semgrep-asvs scan --out semgrep-asvs-out --secrets "${{ inputs.secrets }}" $strict ${{ inputs.paths }}
     - shell: bash
       if: always()
       run: cat semgrep-asvs-out/coverage.md >> "$GITHUB_STEP_SUMMARY"
@@ -44,5 +52,5 @@ runs:
     - shell: bash
       if: always() && steps.scan.outcome == 'failure'
       run: |
-        echo "semgrep-asvs: strict mode found ERROR-severity findings (or the tool failed); see the job summary" >&2
+        echo "semgrep-asvs: secrets found, strict mode found ERROR-severity findings, or the tool failed; see the job summary" >&2
         exit 1

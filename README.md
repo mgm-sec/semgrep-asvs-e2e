@@ -16,7 +16,7 @@ Run `semgrep-asvs coverage` for the gap list.
 
 ### CLI
 ```bash
-pip install git+https://github.com/<org>/semgrep-asvs@v0.1.0
+pip install git+https://github.com/<org>/semgrep-asvs@v0.2.0
 semgrep-asvs scan                          # text to stdout + semgrep-asvs-out/{semgrep.json,semgrep.sarif,coverage.md}
 semgrep-asvs scan --format text src/       # print only, writes nothing
 semgrep-asvs scan --strict                 # exit 1 on any ERROR-severity finding
@@ -27,10 +27,11 @@ semgrep-asvs coverage --format md          # requirement map + gaps, no scan
 ```yaml
 repos:
   - repo: https://github.com/<org>/semgrep-asvs
-    rev: v0.1.0
+    rev: v0.2.0
     hooks:
       - id: semgrep-asvs
         # args: [--strict]   # uncomment to block commits on ERROR-severity findings
+      - id: semgrep-asvs-secrets   # gitleaks on staged changes; always blocking
 ```
 pre-commit installs this package, and with it the pinned Semgrep, in its own environment.
 
@@ -41,18 +42,33 @@ permissions:
   security-events: write   # for the SARIF upload
 steps:
   - uses: actions/checkout@v7
-  - uses: <org>/semgrep-asvs@v0.1.0
+    with:
+      fetch-depth: 0         # full history for the secrets gate
+  - uses: <org>/semgrep-asvs@v0.2.0
     with:
       strict: "false"        # "true" fails the job on ERROR-severity findings
+      secrets: "git"         # gitleaks over full history (needs fetch-depth: 0); "dir" or "none"
       upload-sarif: "true"   # findings appear in the Security tab, tagged asvs/Vx.y.z and asvs-level/Ln
 ```
 The action appends `coverage.md` to the job summary and uploads JSON, SARIF and Markdown as an artifact.
+
+## Secrets gate (gitleaks)
+Every `scan` also runs [gitleaks](https://github.com/gitleaks/gitleaks) and maps secrets to ASVS V2.10.4 and V6.4.1
+(CWE-798). **Any secret exits 1**, regardless of `--strict`; there is no report-only mode for secrets.
+
+- `--secrets dir` (default) scans the given paths; `--secrets git` scans the full history of the repo you run in
+  (the Action default, so give `actions/checkout` `fetch-depth: 0`); `--secrets none` skips the gate.
+- The CLI needs `gitleaks` on PATH: `brew install gitleaks` or `scripts/install-gitleaks.sh` (pinned release, SHA-256 checked).
+  The Action installs it itself. pre-commit gets a second hook, `semgrep-asvs-secrets`, built via Go (pre-commit downloads Go).
+- Allowlist with a `.gitleaks.toml` in your repo root; the tool passes it to gitleaks explicitly.
+- Bump the pin with `scripts/bump-gitleaks.sh <version>` (rewrites version and checksums everywhere).
 
 ## Suppressing findings
 Standard Semgrep mechanisms: `# nosemgrep: <rule-id>` comments and a `.semgrepignore` file in your repo.
 
 ## Versions
 - Semgrep: pinned once in `pyproject.toml` (Renovate bumps it; CI proves the rules still validate and pass their tests).
+- gitleaks: pinned in `scripts/install-gitleaks.sh` (with checksums), `.pre-commit-hooks.yaml` and the module; Renovate bumps the version, `scripts/bump-gitleaks.sh` refreshes the checksums.
 - Vendor rules: `semgrep_asvs/rules/vendor/VENDOR-COMMIT`; a weekly workflow re-syncs from upstream `main` and opens a PR.
 - ASVS: 4.0.3 (`semgrep_asvs/asvs/asvs-4.0.3.flat.json`).
 
