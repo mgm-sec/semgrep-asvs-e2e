@@ -387,5 +387,168 @@ class SecretsTest(unittest.TestCase):
         self.assertRegex(out, r"\| V6\.4\.1 \|  \| x \| x \| 798 \| [1-9]\d* \| 0 \|")
 
 
+class EndToEndTest(unittest.TestCase):
+    """Consumer-facing flows: real git hooks in a consumer repo, pip install from a git ref, SARIF validity,
+    and the action.yml `run:` steps executed locally with GitHub's environment variables."""
+
+    HEAD = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, text=True, capture_output=True).stdout.strip()
+
+    # ---- helpers
+    @staticmethod
+    def _git(repo: Path, *args, check=True):
+        return subprocess.run(["git", "-C", str(repo), *args], text=True, capture_output=True, check=check, env=ENV)
+
+    def _consumer_repo(self, strict: bool) -> Path:
+        repo = Path(tempfile.mkdtemp()) / "consumer"
+        repo.mkdir()
+        self._git(repo, "init", "-q")
+        self._git(repo, "config", "user.email", "e2e@example.com")
+        self._git(repo, "config", "user.name", "e2e")
+        extra = "        args: [--strict]\n" if strict else ""
+        (repo / ".pre-commit-config.yaml").write_text(
+            f"repos:\n  - repo: {REPO}\n    rev: {self.HEAD}\n    hooks:\n"
+            f"      - id: semgrep-asvs\n        verbose: true\n{extra}"
+            f"      - id: semgrep-asvs-secrets\n")
+        p = subprocess.run(["pre-commit", "install"], cwd=repo, text=True, capture_output=True, env=ENV)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return repo
+
+    def _commit(self, repo: Path, name: str, content: str):
+        (repo / name).write_text(content)
+        self._git(repo, "add", "-A")
+        return self._git(repo, "commit", "-q", "-m", f"add {name}", check=False)
+
+    @staticmethod
+    def _fresh_venv() -> Path:
+        venv = Path(tempfile.mkdtemp()) / "venv"
+        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+        return venv
+
+    # ---- consumer repo through real git hooks
+    def test_consumer_secret_commit_is_blocked(self):
+        repo = self._consumer_repo(strict=False)
+        p = self._commit(repo, "key.pem", (FIXTURES / "secrets" / "key.pem").read_text())
+        self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("private-key", p.stdout + p.stderr)
+        self.assertEqual(self._git(repo, "rev-list", "--count", "HEAD", check=False).stdout.strip(), "", "nothing must be committed")
+
+    def test_consumer_report_only_commit_passes_with_findings_printed(self):
+        repo = self._consumer_repo(strict=False)
+        p = self._commit(repo, "verify.py", (FIXTURES / "python" / "verify.py").read_text())
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("V6.2.8", p.stdout + p.stderr)
+        self.assertEqual(self._git(repo, "rev-list", "--count", "HEAD").stdout.strip(), "1")
+
+    def test_consumer_strict_blocks_error_severity(self):
+        repo = self._consumer_repo(strict=True)
+        p = self._commit(repo, "app.php", (FIXTURES / "php" / "app.php").read_text())
+        self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("V14.3.2", p.stdout + p.stderr)
+        # the blocked file stays staged (as it would for a developer); drop it, then a clean commit goes through
+        self._git(repo, "rm", "-q", "--cached", "app.php")
+        (repo / "app.php").unlink()
+        p = self._commit(repo, "clean.py", "print('hello')\n")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    # ---- README install line
+    def test_pip_install_from_git_ref_and_run(self):
+        venv = self._fresh_venv()
+        p = subprocess.run([str(venv / "bin" / "pip"), "install", "-q", f"git+file://{REPO}@{self.HEAD}"], text=True, capture_output=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        p = subprocess.run([str(venv / "bin" / "semgrep-asvs"), "scan", "--format", "text", "--secrets", "none", str(FIXTURES)],
+                           text=True, capture_output=True, cwd=tempfile.mkdtemp())
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("V6.2.8", p.stdout)
+        self.assertIn("-- secrets gate: skipped", p.stdout)
+
+    # ---- SARIF validity for GitHub code scanning
+    def test_sarif_validates_against_schema_and_github_constraints(self):
+        import shutil
+        import urllib.request
+        import jsonschema
+        work = Path(tempfile.mkdtemp())
+        shutil.copytree(FIXTURES, work / "fixtures")
+        out = work / "out"
+        p = subprocess.run([sys.executable, "-m", "semgrep_asvs", "scan", "--format", "sarif", "--out", str(out), "fixtures"],
+                           cwd=work, text=True, capture_output=True, env=ENV)
+        self.assertEqual(p.returncode, 1, "secret in the copied fixtures must block")
+        sarif = json.loads((out / "semgrep.sarif").read_text())
+        with urllib.request.urlopen("https://json.schemastore.org/sarif-2.1.0.json", timeout=30) as r:
+            schema = json.load(r)
+        jsonschema.validate(sarif, schema)
+        self.assertEqual(sarif["version"], "2.1.0")
+        self.assertEqual([r["tool"]["driver"]["name"] for r in sarif["runs"]], ["Semgrep OSS", "gitleaks"])
+        for run in sarif["runs"]:
+            ids = {r["id"] for r in run["tool"]["driver"]["rules"]}
+            for res in run["results"]:
+                self.assertIn(res["ruleId"], ids, "every result must reference a declared rule")
+                if "ruleIndex" in res:
+                    self.assertEqual(run["tool"]["driver"]["rules"][res["ruleIndex"]]["id"], res["ruleId"])
+
+    # ---- action.yml run: steps, executed like the runner would
+    @staticmethod
+    def _cond(expr, inputs, outcomes) -> bool:
+        if not expr:
+            return True
+        for part in str(expr).split("&&"):
+            part = part.strip()
+            if part == "always()":
+                continue
+            m = re.fullmatch(r"(inputs\.([\w-]+)|steps\.(\w+)\.outcome) (==|!=) '([^']*)'", part)
+            assert m, f"unsupported action condition: {expr}"
+            left = inputs[m.group(2)] if m.group(2) else outcomes.get(m.group(3), "success")
+            if (left == m.group(5)) != (m.group(4) == "=="):
+                return False
+        return True
+
+    def _run_action(self, inputs: dict, cwd: Path, venv: Path):
+        from ruamel.yaml import YAML
+        with open(REPO / "action.yml") as f:
+            action = YAML(typ="safe").load(f)
+        vals = {k: str(v.get("default", "")) for k, v in action["inputs"].items()}
+        vals.update(inputs)
+        tmp = Path(tempfile.mkdtemp())
+        summary, ghpath = tmp / "summary.md", tmp / "path.txt"
+        summary.touch()
+        ghpath.touch()
+        env = {**os.environ, "PATH": f"{venv / 'bin'}{os.pathsep}{os.environ['PATH']}", "GITHUB_ACTION_PATH": str(REPO),
+               "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_PATH": str(ghpath), "RUNNER_TEMP": str(tmp)}
+        outcomes, log = {}, []
+        for i, step in enumerate(action["runs"]["steps"]):
+            if "uses" in step or not self._cond(step.get("if"), vals, outcomes):
+                continue
+            script = re.sub(r"\$\{\{\s*inputs\.([\w-]+)\s*\}\}", lambda m: vals[m.group(1)], step["run"])
+            p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script], cwd=cwd, env=env, text=True, capture_output=True)
+            log.append(f"--- step {i} ({step.get('id', 'anon')}) exit {p.returncode}\n{p.stdout}{p.stderr}")
+            outcomes[step.get("id", f"step{i}")] = "success" if p.returncode == 0 else "failure"
+            if p.returncode != 0 and not step.get("continue-on-error"):
+                return False, summary.read_text(), "\n".join(log)
+        return True, summary.read_text(), "\n".join(log)
+
+    def test_action_steps_locally(self):
+        import shutil
+        venv = self._fresh_venv()
+        work = Path(tempfile.mkdtemp())
+        shutil.copytree(FIXTURES, work / "fixtures")  # no .gitleaks.toml here: the fixture secret is live
+
+        ok, summary, log = self._run_action({"paths": "fixtures", "secrets": "none", "upload-sarif": "false"}, work, venv)
+        self.assertTrue(ok, log)
+        self.assertIn("# ASVS 4.0.3 coverage report", summary)
+        self.assertIn("V6.2.8", summary)
+        self.assertIn("Secrets gate (gitleaks): skipped", summary)
+        for f in ("semgrep.json", "semgrep.sarif", "coverage.md"):
+            self.assertTrue((work / "semgrep-asvs-out" / f).is_file(), f)
+
+        ok, summary, log = self._run_action({"paths": "fixtures", "secrets": "none", "strict": "true", "upload-sarif": "false"}, work, venv)
+        self.assertFalse(ok, "strict with an ERROR-severity finding must fail the job")
+        self.assertIn("V14.3.2", summary)
+        self.assertIn("strict mode", log)
+
+        ok, summary, log = self._run_action({"paths": "fixtures", "secrets": "dir", "upload-sarif": "false"}, work, venv)
+        self.assertFalse(ok, "a secret must fail the job even without strict")
+        self.assertIn("V2.10.4", summary)
+        self.assertIn("1 secret(s) found", summary)
+
+
 if __name__ == "__main__":
     unittest.main()
